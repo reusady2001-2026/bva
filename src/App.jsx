@@ -2,8 +2,8 @@ import { useState, useEffect } from "react";
 import * as XLSX from "xlsx";
 
 const API_URL = "https://api.anthropic.com/v1/messages";
-const SUPABASE_URL = "https://siamquigbkwkrjzjnuqg.supabase.co";
-const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNpYW1xdWlnYmt3a3JqempudXFnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYxNDgxNzAsImV4cCI6MjA5MTcyNDE3MH0.8HzfFpcDwlvybkTZLPfruVZ0P0EVWdx-xbLRvJTSpZY";
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_KEY;
 
 const C = {
   bg: "#0f1117", card: "#1a1d27", border: "#2a2d3a",
