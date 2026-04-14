@@ -1,10 +1,8 @@
 {
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
-  "build": {
-    "env": {
-      "VITE_SUPABASE_URL": "https://siamquigbkwkrjzjnuqg.supabase.co",
-      "VITE_SUPABASE_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNpYW1xdWlnYmt3a3JqempudXFnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYxNDgxNzAsImV4cCI6MjA5MTcyNDE3MH0.8HzfFpcDwlvybkTZLPfruVZ0P0EVWdx-xbLRvJTSpZY"
-    }
+  "env": {
+    "VITE_SUPABASE_URL": "https://siamquigbkwkrjzjnuqg.supabase.co",
+    "VITE_SUPABASE_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNpYW1xdWlnYmt3a3JqempudXFnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYxNDgxNzAsImV4cCI6MjA5MTcyNDE3MH0.8HzfFpcDwlvybkTZLPfruVZ0P0EVWdx-xbLRvJTSpZY"
   }
 }
