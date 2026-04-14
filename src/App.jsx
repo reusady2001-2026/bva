@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import * as XLSX from "xlsx";
 
-const API_URL = "https://api.anthropic.com/v1/messages";
+const API_URL = "/api/claude";
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_KEY;
 
@@ -429,7 +429,7 @@ export default function BVATool() {
                     <div key={label} style={{ ...card({ padding: "14px 18px" }), flex: 1 }}>
                       <div style={{ color: C.muted, fontSize: 11, marginBottom: 4 }}>{label}</div>
                       <div style={{ fontSize: 20, fontWeight: 700, color: isVar ? (val>=0?C.green:C.red) : C.text }}>
-                        {val<0?"-":""}${Math.abs(val).toLocaleString("en-US",{maximumFractionDigits:0})}
+                        {val<0?"-":""} ${Math.abs(val).toLocaleString("en-US",{maximumFractionDigits:0})}
                       </div>
                       {isVar && totalBudget!==0 && <div style={{fontSize:11,color:C.muted,marginTop:2}}>{((val/Math.abs(totalBudget))*100).toFixed(1)}%</div>}
                     </div>
