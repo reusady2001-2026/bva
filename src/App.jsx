@@ -79,20 +79,15 @@ async function readFileRows(file) {
 async function parseFileWithClaude(file, fileType) {
   const rows = await readFileRows(file);
 
-  // Send only the first 20 rows + all unique category names to AI
-  // AI returns structure map (tiny response) — data extraction done locally
-  const sampleRows = rows.slice(0, 20);
-  const allCats = [...new Set(
-    rows.slice(1).map(r => String(r[0] || "").trim()).filter(v => v && !/^[\d$,()\-+.]+$/.test(v))
-  )].slice(0, 100);
-
-  const sampleText = sampleRows.map(r => r.slice(0, 20).join("\t")).join("\n");
+  // Send the full file to Claude — Claude sees every row, classifies every category
+  // Claude returns only the structure map (small output); numbers extracted locally
+  const fullText = rows.map(r => r.slice(0, 30).join("\t")).join("\n");
 
   const res = await fetch(API_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-opus-4-6",
       max_tokens: 2000,
       system: `You analyze real estate ${fileType} spreadsheet structure.
 Return ONLY raw JSON (no markdown):
@@ -102,9 +97,9 @@ Return ONLY raw JSON (no markdown):
   "valueCol": <0-based column index for values if single-period, else -1>,
   "year": <inferred year as integer>,
   "months": [{"col": <col index>, "month": <1-12>}],
-  "categories": {"<name>": "Income|Expense|NOI|Other"}
+  "categories": {"<category name>": "Income|Expense|NOI|Other"}
 }`,
-      messages: [{ role: "user", content: `First rows (tab-separated):\n${sampleText}\n\nAll categories:\n${allCats.join("\n")}` }],
+      messages: [{ role: "user", content: `Full spreadsheet (tab-separated):\n${fullText}` }],
     }),
   });
 
