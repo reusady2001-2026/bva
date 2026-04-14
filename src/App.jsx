@@ -69,10 +69,10 @@ async function parseFileWithClaude(csv, fileType) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: "claude-sonnet-4-20250514",
-      max_tokens: 1000,
+      max_tokens: 4000,
       system: `You are a real estate financial data parser. The file is a ${fileType}.
 It may contain data for multiple months as separate columns (Jan, Feb, ... or 01/2024 etc.).
-Return ONLY valid JSON, no markdown:
+Return ONLY a raw JSON object with no markdown, no explanation, no code blocks:
 {
   "property": "property name or null",
   "months": [
@@ -91,7 +91,9 @@ Numbers are plain (no $ or commas). If only one month, return array with one ent
   });
   const data = await res.json();
   const text = data.content?.map(b => b.text || "").join("") || "";
-  return JSON.parse(text.replace(/```json|```/g, "").trim());
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) throw new Error("No JSON in response: " + text.slice(0, 200));
+  return JSON.parse(jsonMatch[0]);
 }
 
 async function getInsights(matches) {
