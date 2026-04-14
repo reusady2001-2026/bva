@@ -62,38 +62,55 @@ async function loadData(table, propertyId, year, month) {
   return await sbFetch(`/${table}?property_id=eq.${propertyId}&year=eq.${year}&month=eq.${month}&select=category,section,value`);
 }
 
+// ── JSON repair for truncated responses ──────────────────────────
+function repairJSON(str) {
+  // Remove last incomplete item (not closed with })
+  let s = str;
+  const lastItemEnd = Math.max(s.lastIndexOf("},"), s.lastIndexOf("}]"));
+  if (lastItemEnd > 0) s = s.slice(0, lastItemEnd + 1);
+  // Close any unclosed brackets
+  const stack = [];
+  let inStr = false, esc = false;
+  for (const c of s) {
+    if (esc) { esc = false; continue; }
+    if (c === "\\" && inStr) { esc = true; continue; }
+    if (c === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (c === "{") stack.push("}");
+    else if (c === "[") stack.push("]");
+    else if (c === "}" || c === "]") stack.pop();
+  }
+  return s + stack.reverse().join("");
+}
+
 // ── Claude helpers ────────────────────────────────────────────────
 async function parseFileWithClaude(csv, fileType) {
+  // Limit CSV size to avoid exceeding model output limits
+  const trimmedCsv = csv.length > 5000 ? csv.slice(0, 5000) : csv;
   const res = await fetch(API_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: "claude-sonnet-4-20250514",
-      max_tokens: 4000,
+      max_tokens: 8000,
       system: `You are a real estate financial data parser. The file is a ${fileType}.
 It may contain data for multiple months as separate columns (Jan, Feb, ... or 01/2024 etc.).
-Return ONLY a raw JSON object with no markdown, no explanation, no code blocks:
-{
-  "property": "property name or null",
-  "months": [
-    {
-      "year": 2024,
-      "month": 1,
-      "items": [
-        { "category": "string", "section": "Income|Expense|NOI|Other", "value": number }
-      ]
-    }
-  ]
-}
-Numbers are plain (no $ or commas). If only one month, return array with one entry. Infer year from context or use current year.`,
-      messages: [{ role: "user", content: `Parse this file:\n\n${csv}` }],
+Return ONLY a raw JSON object — no markdown, no explanation, no code blocks, no comments:
+{"property":"name or null","months":[{"year":2024,"month":1,"items":[{"category":"string","section":"Income|Expense|NOI|Other","value":number}]}]}
+Numbers must be plain integers or decimals (no $ signs, no commas). Infer year from context or use current year.`,
+      messages: [{ role: "user", content: `Parse this file:\n\n${trimmedCsv}` }],
     }),
   });
   const data = await res.json();
   const text = data.content?.map(b => b.text || "").join("") || "";
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error("No JSON in response: " + text.slice(0, 200));
-  return JSON.parse(jsonMatch[0]);
+  const start = text.indexOf("{");
+  if (start === -1) throw new Error("No JSON in AI response: " + text.slice(0, 200));
+  const jsonText = text.slice(start);
+  try {
+    return JSON.parse(jsonText);
+  } catch {
+    return JSON.parse(repairJSON(jsonText));
+  }
 }
 
 async function getInsights(matches) {
