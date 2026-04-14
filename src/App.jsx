@@ -62,55 +62,104 @@ async function loadData(table, propertyId, year, month) {
   return await sbFetch(`/${table}?property_id=eq.${propertyId}&year=eq.${year}&month=eq.${month}&select=category,section,value`);
 }
 
-// ── JSON repair for truncated responses ──────────────────────────
-function repairJSON(str) {
-  // Remove last incomplete item (not closed with })
-  let s = str;
-  const lastItemEnd = Math.max(s.lastIndexOf("},"), s.lastIndexOf("}]"));
-  if (lastItemEnd > 0) s = s.slice(0, lastItemEnd + 1);
-  // Close any unclosed brackets
-  const stack = [];
-  let inStr = false, esc = false;
-  for (const c of s) {
-    if (esc) { esc = false; continue; }
-    if (c === "\\" && inStr) { esc = true; continue; }
-    if (c === '"') { inStr = !inStr; continue; }
-    if (inStr) continue;
-    if (c === "{") stack.push("}");
-    else if (c === "[") stack.push("]");
-    else if (c === "}" || c === "]") stack.pop();
-  }
-  return s + stack.reverse().join("");
+// ── File parsing & AI helpers ─────────────────────────────────────
+async function readFileRows(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      const wb = XLSX.read(new Uint8Array(e.target.result), { type: "array" });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      resolve(XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" }));
+    };
+    reader.onerror = reject;
+    reader.readAsArrayBuffer(file);
+  });
 }
 
-// ── Claude helpers ────────────────────────────────────────────────
-async function parseFileWithClaude(csv, fileType) {
-  // Limit CSV size to avoid exceeding model output limits
-  const trimmedCsv = csv.length > 5000 ? csv.slice(0, 5000) : csv;
+async function parseFileWithClaude(file, fileType) {
+  const rows = await readFileRows(file);
+
+  // Send only the first 20 rows + all unique category names to AI
+  // AI returns structure map (tiny response) — data extraction done locally
+  const sampleRows = rows.slice(0, 20);
+  const allCats = [...new Set(
+    rows.slice(1).map(r => String(r[0] || "").trim()).filter(v => v && !/^[\d$,()\-+.]+$/.test(v))
+  )].slice(0, 100);
+
+  const sampleText = sampleRows.map(r => r.slice(0, 20).join("\t")).join("\n");
+
   const res = await fetch(API_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: "claude-sonnet-4-20250514",
-      max_tokens: 8000,
-      system: `You are a real estate financial data parser. The file is a ${fileType}.
-It may contain data for multiple months as separate columns (Jan, Feb, ... or 01/2024 etc.).
-Return ONLY a raw JSON object — no markdown, no explanation, no code blocks, no comments:
-{"property":"name or null","months":[{"year":2024,"month":1,"items":[{"category":"string","section":"Income|Expense|NOI|Other","value":number}]}]}
-Numbers must be plain integers or decimals (no $ signs, no commas). Infer year from context or use current year.`,
-      messages: [{ role: "user", content: `Parse this file:\n\n${trimmedCsv}` }],
+      max_tokens: 2000,
+      system: `You analyze real estate ${fileType} spreadsheet structure.
+Return ONLY raw JSON (no markdown):
+{
+  "headerRow": <0-based row index containing month headers, or -1 if none>,
+  "categoryCol": <0-based column index for category names>,
+  "valueCol": <0-based column index for values if single-period, else -1>,
+  "year": <inferred year as integer>,
+  "months": [{"col": <col index>, "month": <1-12>}],
+  "categories": {"<name>": "Income|Expense|NOI|Other"}
+}`,
+      messages: [{ role: "user", content: `First rows (tab-separated):\n${sampleText}\n\nAll categories:\n${allCats.join("\n")}` }],
     }),
   });
-  const data = await res.json();
-  const text = data.content?.map(b => b.text || "").join("") || "";
-  const start = text.indexOf("{");
-  if (start === -1) throw new Error("No JSON in AI response: " + text.slice(0, 200));
-  const jsonText = text.slice(start);
-  try {
-    return JSON.parse(jsonText);
-  } catch {
-    return JSON.parse(repairJSON(jsonText));
+
+  const aiData = await res.json();
+  const aiText = aiData.content?.map(b => b.text || "").join("") || "";
+  const jsonStart = aiText.indexOf("{");
+  if (jsonStart === -1) throw new Error("AI לא זיהה מבנה: " + aiText.slice(0, 200));
+  const structure = JSON.parse(aiText.slice(jsonStart));
+
+  const { categoryCol = 0, valueCol = -1, year = new Date().getFullYear(),
+    months = [], categories = {}, headerRow = 0 } = structure;
+  const dataStart = headerRow >= 0 ? headerRow + 1 : 1;
+
+  // Helper: parse a cell value to float
+  const toNum = v => parseFloat(String(v || "").replace(/[$,()]/g, "")) || 0;
+
+  if (months.length === 0) {
+    // Single-period file
+    const valCol = valueCol >= 0 ? valueCol : (() => {
+      const counts = {};
+      for (let ri = dataStart; ri < Math.min(rows.length, dataStart + 20); ri++) {
+        for (let ci = 1; ci < (rows[ri]?.length || 0); ci++) {
+          if (ci === categoryCol) continue;
+          const n = parseFloat(String(rows[ri][ci]).replace(/[$,]/g, ""));
+          if (!isNaN(n) && n !== 0) counts[ci] = (counts[ci] || 0) + 1;
+        }
+      }
+      return parseInt(Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "1");
+    })();
+
+    const currentMonth = new Date().getMonth() + 1;
+    const items = [];
+    for (let ri = dataStart; ri < rows.length; ri++) {
+      const cat = String(rows[ri]?.[categoryCol] ?? "").trim();
+      if (!cat) continue;
+      const val = toNum(rows[ri]?.[valCol]);
+      items.push({ category: cat, section: categories[cat] || "Other", value: val });
+    }
+    return { property: null, months: [{ year, month: currentMonth, items }] };
   }
+
+  // Multi-month file
+  const monthMap = {};
+  for (const m of months) {
+    monthMap[m.month] = { year, month: m.month, items: [] };
+  }
+  for (let ri = dataStart; ri < rows.length; ri++) {
+    const cat = String(rows[ri]?.[categoryCol] ?? "").trim();
+    if (!cat) continue;
+    for (const m of months) {
+      const val = toNum(rows[ri]?.[m.col]);
+      monthMap[m.month]?.items.push({ category: cat, section: categories[cat] || "Other", value: val });
+    }
+  }
+  return { property: null, months: Object.values(monthMap).filter(m => m.items.some(i => i.value !== 0)) };
 }
 
 async function getInsights(matches) {
@@ -128,21 +177,6 @@ async function getInsights(matches) {
   });
   const data = await res.json();
   return data.content?.map(b => b.text || "").join("") || "";
-}
-
-// ── File parsing ──────────────────────────────────────────────────
-async function readFileCSV(file) {
-  return new Promise((res, rej) => {
-    const r = new FileReader();
-    r.onload = e => {
-      const data = new Uint8Array(e.target.result);
-      const wb = XLSX.read(data, { type: "array" });
-      const sheet = wb.Sheets[wb.SheetNames[0]];
-      res(XLSX.utils.sheet_to_csv(sheet));
-    };
-    r.onerror = rej;
-    r.readAsArrayBuffer(file);
-  });
 }
 
 // ── UI Components ─────────────────────────────────────────────────
@@ -257,9 +291,8 @@ export default function BVATool() {
     if (!uploadFile || !activeProperty) return;
     setUploading(true); setUploadMsg("קורא קובץ..."); setUploadResult(null);
     try {
-      const csv = await readFileCSV(uploadFile);
       setUploadMsg("AI מנתח...");
-      const parsed = await parseFileWithClaude(csv, uploadType === "budget" ? "budget" : "P&L actual");
+      const parsed = await parseFileWithClaude(uploadFile, uploadType === "budget" ? "budget" : "P&L actual");
       setUploadMsg(`שומר ${parsed.months.length} חודש/ים...`);
       const table = uploadType === "budget" ? "bva_budget" : "bva_actual";
       let saved = 0;
