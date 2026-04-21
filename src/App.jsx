@@ -68,7 +68,7 @@ async function parseFileWithClaude(csv, fileType) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "claude-opus-4-7",
+      model: "claude-sonnet-4-6",
       max_tokens: 32000,
       system: `You are a real estate financial data parser. The file is a ${fileType}.
 It may contain data for multiple months as separate columns (Jan, Feb, ... or 01/2024 etc.).
@@ -99,7 +99,7 @@ async function getInsights(matches) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "claude-opus-4-7",
+      model: "claude-sonnet-4-6",
       max_tokens: 16000,
       messages: [{
         role: "user",
