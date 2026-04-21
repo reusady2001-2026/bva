@@ -68,8 +68,8 @@ async function parseFileWithClaude(csv, fileType) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 8192,
+      model: "claude-opus-4-7",
+      max_tokens: 32000,
       system: `You are a real estate financial data parser. The file is a ${fileType}.
 It may contain data for multiple months as separate columns (Jan, Feb, ... or 01/2024 etc.).
 Return ONLY valid JSON, no markdown:
@@ -99,8 +99,8 @@ async function getInsights(matches) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 1000,
+      model: "claude-opus-4-7",
+      max_tokens: 16000,
       messages: [{
         role: "user",
         content: `אתה אנליסט נדל"ן. נתח את ה-BVA הבא ותן 3-5 תובנות קצרות בעברית. היה ספציפי עם מספרים.\n\n${JSON.stringify(matches)}`,
