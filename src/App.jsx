@@ -69,7 +69,7 @@ async function parseFileWithClaude(csv, fileType) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: "claude-sonnet-4-20250514",
-      max_tokens: 1000,
+      max_tokens: 8192,
       system: `You are a real estate financial data parser. The file is a ${fileType}.
 It may contain data for multiple months as separate columns (Jan, Feb, ... or 01/2024 etc.).
 Return ONLY valid JSON, no markdown:
