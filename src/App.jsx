@@ -192,25 +192,46 @@ export default function BVATool() {
       const sheet = wb.Sheets[wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
 
-      const headers = rows[0] || [];
       const currentYear = new Date().getFullYear();
       const HEBREW_MONTHS = ["ינואר","פברואר","מרץ","אפריל","מאי","יוני","יולי","אוגוסט","ספטמבר","אוקטובר","נובמבר","דצמבר"];
-      const ENGLISH_MONTHS = ["january","february","march","april","may","june","july","august","september","october","november","december"];
+
+      function parseMonthCell(h) {
+        if (!h) return null;
+        const s = String(h).trim();
+        if (!s || s.toLowerCase() === "total") return null;
+        // Hebrew month name (with optional year)
+        const hebrewIdx = HEBREW_MONTHS.indexOf(s);
+        if (hebrewIdx !== -1) return { month: hebrewIdx + 1, year: currentYear };
+        // MM/YYYY
+        const mmYYYY = s.match(/^(\d{1,2})\/(\d{4})$/);
+        if (mmYYYY) return { month: parseInt(mmYYYY[1]), year: parseInt(mmYYYY[2]) };
+        // "MMM YYYY" e.g. "Apr 2024"
+        const mmmYYYY = s.match(/^([A-Za-z]{3,9})\s+(\d{4})$/);
+        if (mmmYYYY) {
+          const d = new Date(`${mmmYYYY[1]} 1 ${mmmYYYY[2]}`);
+          if (!isNaN(d)) return { month: d.getMonth() + 1, year: parseInt(mmmYYYY[2]) };
+        }
+        return null;
+      }
+
+      // Find the header row: first row where any cell from index 1 onward parses as a month
+      let headerRowIndex = -1;
+      for (let r = 0; r < rows.length; r++) {
+        const row = rows[r] || [];
+        for (let c = 1; c < row.length; c++) {
+          if (parseMonthCell(row[c])) { headerRowIndex = r; break; }
+        }
+        if (headerRowIndex !== -1) break;
+      }
+      if (headerRowIndex === -1) throw new Error("לא נמצאה שורת כותרת עם עמודות חודש בקובץ");
+
+      const propertyName = headerRowIndex > 0 ? String(rows[0]?.[0] ?? "").trim() || null : null;
+      const headers = rows[headerRowIndex] || [];
 
       const monthCols = [];
-      for (let c = 2; c < headers.length; c++) {
-        const h = String(headers[c] ?? "").trim();
-        if (!h) continue;
-        const hebrewIdx = HEBREW_MONTHS.indexOf(h);
-        if (hebrewIdx !== -1) { monthCols.push({ col: c, month: hebrewIdx + 1, year: currentYear }); continue; }
-        const mmYYYY = h.match(/^(\d{1,2})\/(\d{4})$/);
-        if (mmYYYY) { monthCols.push({ col: c, month: parseInt(mmYYYY[1]), year: parseInt(mmYYYY[2]) }); continue; }
-        const lc = h.toLowerCase();
-        const engIdx = ENGLISH_MONTHS.findIndex(m => lc.startsWith(m));
-        if (engIdx !== -1) {
-          const yearMatch = h.match(/(\d{4})/);
-          monthCols.push({ col: c, month: engIdx + 1, year: yearMatch ? parseInt(yearMatch[1]) : currentYear });
-        }
+      for (let c = 1; c < headers.length; c++) {
+        const parsed = parseMonthCell(headers[c]);
+        if (parsed) monthCols.push({ col: c, month: parsed.month, year: parsed.year });
       }
 
       if (monthCols.length === 0) throw new Error("לא נמצאו עמודות חודש בקובץ");
@@ -218,11 +239,11 @@ export default function BVATool() {
       const monthData = {};
       for (const mc of monthCols) monthData[`${mc.year}-${mc.month}`] = { year: mc.year, month: mc.month, items: [] };
 
-      for (let r = 1; r < rows.length; r++) {
+      for (let r = headerRowIndex + 1; r < rows.length; r++) {
         const row = rows[r];
-        const category = String(row[0] ?? "").trim();
+        const category = String(row?.[0] ?? "").trim();
         if (!category) continue;
-        const section = String(row[1] ?? "").trim() || "Other";
+        const section = "Other";
         for (const mc of monthCols) {
           const raw = String(row[mc.col] ?? "").replace(/[$,]/g, "").trim();
           const value = parseFloat(raw);
