@@ -129,30 +129,6 @@ function DropZone({ label, file, onFile, accept = ".xlsx,.xls,.csv" }) {
   );
 }
 
-function VarianceRow({ row }) {
-  const isIncome = row.section === "Income";
-  const diff = row.actual - row.budget;
-  const isGood = isIncome ? diff >= 0 : diff <= 0;
-  const pct = row.budget !== 0 ? (diff / Math.abs(row.budget)) * 100 : 0;
-  const color = Math.abs(diff) < 0.5 ? C.muted : isGood ? C.green : C.red;
-  const fmt = v => "$" + Math.abs(v).toLocaleString("en-US", { maximumFractionDigits: 0 });
-  return (
-    <tr style={{ borderTop: `1px solid ${C.border}` }}>
-      <td style={{ padding: "9px 14px", color: C.text }}>{row.category}</td>
-      <td style={{ padding: "9px 14px", textAlign: "right", color: C.sub }}>{fmt(row.budget)}</td>
-      <td style={{ padding: "9px 14px", textAlign: "right", color: C.text }}>{fmt(row.actual)}</td>
-      <td style={{ padding: "9px 14px", textAlign: "right" }}>
-        <span style={{ color, fontWeight: 600 }}>
-          {diff >= 0 ? "+" : ""}{diff.toLocaleString("en-US", { maximumFractionDigits: 0 })}
-        </span>
-        <span style={{ color: C.muted, fontSize: 11, marginLeft: 5 }}>
-          ({pct >= 0 ? "+" : ""}{pct.toFixed(1)}%)
-        </span>
-      </td>
-    </tr>
-  );
-}
-
 // ── Main App ──────────────────────────────────────────────────────
 export default function BVATool() {
   const [view, setView] = useState("home"); // home | property | upload | analyze
@@ -452,42 +428,89 @@ export default function BVATool() {
             </div>
 
             {/* BVA Results */}
-            {bvaData && (
-              <>
-                {/* NOI summary */}
-                <div style={{ display: "flex", gap: 14 }}>
-                  {[["NOI תקציב", totalBudget, false], ["NOI בפועל", totalActual, false], ["סטייה", totalActual-totalBudget, true]].map(([label, val, isVar]) => (
-                    <div key={label} style={{ ...card({ padding: "14px 18px" }), flex: 1 }}>
-                      <div style={{ color: C.muted, fontSize: 11, marginBottom: 4 }}>{label}</div>
-                      <div style={{ fontSize: 20, fontWeight: 700, color: isVar ? (val>=0?C.green:C.red) : C.text }}>
-                        {val<0?"-":""} ${Math.abs(val).toLocaleString("en-US",{maximumFractionDigits:0})}
-                      </div>
-                      {isVar && totalBudget!==0 && <div style={{fontSize:11,color:C.muted,marginTop:2}}>{((val/Math.abs(totalBudget))*100).toFixed(1)}%</div>}
-                    </div>
-                  ))}
-                </div>
-
-                {sections.map(sec => (
-                  <div key={sec} style={card({ overflow: "hidden" })}>
-                    <div style={{ padding: "11px 16px", borderBottom: `1px solid ${C.border}`, fontWeight: 700, fontSize: 12, color: C.sub, textTransform: "uppercase", letterSpacing: 1 }}>
-                      {sec==="Income"?"📈 הכנסות":sec==="Expense"?"📉 הוצאות":sec==="NOI"?"💰 NOI":sec}
-                    </div>
-                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-                      <thead>
-                        <tr style={{ background: "#13151f" }}>
-                          {["קטגוריה","תקציב","בפועל","סטייה $ / %"].map(h => (
-                            <th key={h} style={{ padding:"9px 14px", textAlign: h==="קטגוריה"?"left":"right", color:C.muted, fontWeight:600, fontSize:11 }}>{h}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {bvaData.filter(r=>r.section===sec).map((row,i)=><VarianceRow key={i} row={row}/>)}
-                      </tbody>
-                    </table>
+            {bvaData && (() => {
+              const selectedMonths = [...new Map(bvaData.map(r => [`${r.year}-${r.month}`, { year: r.year, month: r.month }])).values()]
+                .sort((a, b) => a.year !== b.year ? a.year - b.year : a.month - b.month);
+              return (
+                <>
+                  {/* NOI summary — one card per month */}
+                  <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+                    {selectedMonths.map(({ year, month }) => {
+                      const mRows = bvaData.filter(r => r.year === year && r.month === month);
+                      const budgetNOI = mRows.filter(r => r.section === "Income").reduce((a, b) => a + b.budget, 0)
+                                      - mRows.filter(r => r.section === "Expense").reduce((a, b) => a + b.budget, 0);
+                      const actualNOI = mRows.filter(r => r.section === "Income").reduce((a, b) => a + b.actual, 0)
+                                       - mRows.filter(r => r.section === "Expense").reduce((a, b) => a + b.actual, 0);
+                      const delta = actualNOI - budgetNOI;
+                      return (
+                        <div key={`${year}-${month}`} style={{ ...card({ padding: "14px 18px" }), flex: 1, minWidth: 200 }}>
+                          <div style={{ color: C.accent, fontWeight: 700, fontSize: 12, marginBottom: 10 }}>{MONTHS[month - 1]} {year}</div>
+                          <div style={{ display: "flex", gap: 16 }}>
+                            <div>
+                              <div style={{ color: C.muted, fontSize: 10, marginBottom: 2 }}>תקציב</div>
+                              <div style={{ fontWeight: 700, fontSize: 15, color: C.text }}>${budgetNOI.toLocaleString("en-US", { maximumFractionDigits: 0 })}</div>
+                            </div>
+                            <div>
+                              <div style={{ color: C.muted, fontSize: 10, marginBottom: 2 }}>בפועל</div>
+                              <div style={{ fontWeight: 700, fontSize: 15, color: C.text }}>${actualNOI.toLocaleString("en-US", { maximumFractionDigits: 0 })}</div>
+                            </div>
+                            <div>
+                              <div style={{ color: C.muted, fontSize: 10, marginBottom: 2 }}>סטייה</div>
+                              <div style={{ fontWeight: 700, fontSize: 15, color: delta >= 0 ? C.green : C.red }}>
+                                {delta >= 0 ? "+" : ""}{delta.toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
-                ))}
 
-                {/* AI Insights */}
+                  {sections.map(sec => {
+                    const secRows = bvaData.filter(r => r.section === sec);
+                    const cats = [...new Set(secRows.map(r => r.category))];
+                    const isGoodDelta = delta => sec === "Expense" ? delta <= 0 : delta >= 0;
+                    return (
+                      <div key={sec} style={card({ overflow: "hidden" })}>
+                        <div style={{ padding: "11px 16px", borderBottom: `1px solid ${C.border}`, fontWeight: 700, fontSize: 12, color: C.sub, textTransform: "uppercase", letterSpacing: 1 }}>
+                          {sec === "Income" ? "📈 הכנסות" : sec === "Expense" ? "📉 הוצאות" : sec === "NOI" ? "💰 NOI" : sec}
+                        </div>
+                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                          <thead>
+                            <tr style={{ background: "#13151f" }}>
+                              <th style={{ padding: "9px 14px", textAlign: "left", color: C.muted, fontWeight: 600, fontSize: 11 }}>קטגוריה</th>
+                              {selectedMonths.flatMap(({ year, month }) => [
+                                <th key={`b-${year}-${month}`} style={{ padding: "9px 14px", textAlign: "right", color: C.muted, fontWeight: 600, fontSize: 11 }}>תקציב {MONTHS[month - 1]}</th>,
+                                <th key={`a-${year}-${month}`} style={{ padding: "9px 14px", textAlign: "right", color: C.muted, fontWeight: 600, fontSize: 11 }}>בפועל {MONTHS[month - 1]}</th>,
+                                <th key={`d-${year}-${month}`} style={{ padding: "9px 14px", textAlign: "right", color: C.muted, fontWeight: 600, fontSize: 11 }}>Δ {MONTHS[month - 1]}</th>,
+                              ])}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {cats.map(cat => (
+                              <tr key={cat} style={{ borderTop: `1px solid ${C.border}` }}>
+                                <td style={{ padding: "9px 14px", color: C.text }}>{cat}</td>
+                                {selectedMonths.flatMap(({ year, month }) => {
+                                  const row = secRows.find(r => r.category === cat && r.year === year && r.month === month);
+                                  const budget = row?.budget ?? 0;
+                                  const actual = row?.actual ?? 0;
+                                  const delta = actual - budget;
+                                  const deltaBg = Math.abs(delta) < 0.5 ? "transparent" : isGoodDelta(delta) ? "#0d2a1a" : "#2a0d0d";
+                                  return [
+                                    <td key={`b-${year}-${month}`} style={{ padding: "9px 14px", textAlign: "right", color: C.sub }}>${budget.toLocaleString("en-US", { maximumFractionDigits: 0 })}</td>,
+                                    <td key={`a-${year}-${month}`} style={{ padding: "9px 14px", textAlign: "right", color: C.text }}>${actual.toLocaleString("en-US", { maximumFractionDigits: 0 })}</td>,
+                                    <td key={`d-${year}-${month}`} style={{ padding: "9px 14px", textAlign: "right", background: deltaBg, color: C.text }}>{delta >= 0 ? "+" : ""}{delta.toLocaleString("en-US", { maximumFractionDigits: 0 })}</td>,
+                                  ];
+                                })}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  })}
+
+                  {/* AI Insights */}
                 <div style={card({ padding: 20 })}>
                   <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: insights?14:0 }}>
                     <div style={{ fontWeight:700, fontSize:15 }}>💡 תובנות AI</div>
@@ -498,7 +521,8 @@ export default function BVATool() {
                   {insights && <div style={{ color:C.sub, fontSize:14, lineHeight:1.8, whiteSpace:"pre-wrap" }}>{insights}</div>}
                 </div>
               </>
-            )}
+              );
+            })()}
           </div>
         )}
       </div>
