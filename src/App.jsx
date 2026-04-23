@@ -63,37 +63,6 @@ async function loadData(table, propertyId, year, month) {
 }
 
 // ── Claude helpers ────────────────────────────────────────────────
-async function parseFileWithClaude(csv, fileType) {
-  const res = await fetch(API_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 32000,
-      system: `You are a real estate financial data parser. The file is a ${fileType}.
-It may contain data for multiple months as separate columns (Jan, Feb, ... or 01/2024 etc.).
-Return ONLY valid JSON, no markdown:
-{
-  "property": "property name or null",
-  "months": [
-    {
-      "year": 2024,
-      "month": 1,
-      "items": [
-        { "category": "string", "section": "Income|Expense|NOI|Other", "value": number }
-      ]
-    }
-  ]
-}
-Numbers are plain (no $ or commas). If only one month, return array with one entry. Infer year from context or use current year.`,
-      messages: [{ role: "user", content: `Parse this file:\n\n${csv}` }],
-    }),
-  });
-  const data = await res.json();
-  const text = data.content?.map(b => b.text || "").join("") || "";
-  return JSON.parse(text.replace(/```json|```/g, "").trim());
-}
-
 async function getInsights(matches) {
   const res = await fetch(API_URL, {
     method: "POST",
@@ -238,23 +207,70 @@ export default function BVATool() {
     if (!uploadFile || !activeProperty) return;
     setUploading(true); setUploadMsg("קורא קובץ..."); setUploadResult(null);
     try {
-      const csv = await readFileCSV(uploadFile);
-      setUploadMsg("AI מנתח...");
-      const parsed = await parseFileWithClaude(csv, uploadType === "budget" ? "budget" : "P&L actual");
-      setUploadMsg(`שומר ${parsed.months.length} חודש/ים...`);
+      const buffer = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = e => resolve(new Uint8Array(e.target.result));
+        reader.onerror = reject;
+        reader.readAsArrayBuffer(uploadFile);
+      });
+      const wb = XLSX.read(buffer, { type: "array" });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+
+      const headers = rows[0] || [];
+      const currentYear = new Date().getFullYear();
+      const HEBREW_MONTHS = ["ינואר","פברואר","מרץ","אפריל","מאי","יוני","יולי","אוגוסט","ספטמבר","אוקטובר","נובמבר","דצמבר"];
+      const ENGLISH_MONTHS = ["january","february","march","april","may","june","july","august","september","october","november","december"];
+
+      const monthCols = [];
+      for (let c = 2; c < headers.length; c++) {
+        const h = String(headers[c] ?? "").trim();
+        if (!h) continue;
+        const hebrewIdx = HEBREW_MONTHS.indexOf(h);
+        if (hebrewIdx !== -1) { monthCols.push({ col: c, month: hebrewIdx + 1, year: currentYear }); continue; }
+        const mmYYYY = h.match(/^(\d{1,2})\/(\d{4})$/);
+        if (mmYYYY) { monthCols.push({ col: c, month: parseInt(mmYYYY[1]), year: parseInt(mmYYYY[2]) }); continue; }
+        const lc = h.toLowerCase();
+        const engIdx = ENGLISH_MONTHS.findIndex(m => lc.startsWith(m));
+        if (engIdx !== -1) {
+          const yearMatch = h.match(/(\d{4})/);
+          monthCols.push({ col: c, month: engIdx + 1, year: yearMatch ? parseInt(yearMatch[1]) : currentYear });
+        }
+      }
+
+      if (monthCols.length === 0) throw new Error("לא נמצאו עמודות חודש בקובץ");
+
+      const monthData = {};
+      for (const mc of monthCols) monthData[`${mc.year}-${mc.month}`] = { year: mc.year, month: mc.month, items: [] };
+
+      for (let r = 1; r < rows.length; r++) {
+        const row = rows[r];
+        const category = String(row[0] ?? "").trim();
+        if (!category) continue;
+        const section = String(row[1] ?? "").trim() || "Other";
+        for (const mc of monthCols) {
+          const raw = String(row[mc.col] ?? "").replace(/[$,]/g, "").trim();
+          const value = parseFloat(raw);
+          monthData[`${mc.year}-${mc.month}`].items.push({ category, section, value: isNaN(value) ? 0 : value });
+        }
+      }
+
+      setUploadMsg(`שומר ${monthCols.length} חודש/ים...`);
       const table = uploadType === "budget" ? "bva_budget" : "bva_actual";
       let saved = 0;
-      for (const m of parsed.months) {
-        const rows = m.items.map(item => ({
+      for (const key of Object.keys(monthData)) {
+        const m = monthData[key];
+        if (!m.items.length) continue;
+        await upsertRows(table, m.items.map(item => ({
           property_id: activeProperty.id,
           year: m.year, month: m.month,
           category: item.category, section: item.section, value: item.value,
           updated_at: new Date().toISOString(),
-        }));
-        await upsertRows(table, rows);
+        })));
         saved++;
       }
-      setUploadResult({ ok: true, months: parsed.months.length, property: parsed.property });
+
+      setUploadResult({ ok: true, months: saved });
       setUploadFile(null);
       const [bm, am] = await Promise.all([
         loadMonths("bva_budget", activeProperty.id).catch(() => []),
