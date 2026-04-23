@@ -41,7 +41,7 @@ async function getOrCreateProperty(name) {
 
 async function upsertRows(table, rows) {
   if (!rows.length) return;
-  await sbFetch(`/${table}`, {
+  await sbFetch(`/${table}?on_conflict=property_id,year,month,category`, {
     method: "POST", prefer: "resolution=merge-duplicates,return=minimal",
     body: JSON.stringify(rows),
   });
@@ -257,7 +257,8 @@ export default function BVATool() {
       for (const key of Object.keys(monthData)) {
         const m = monthData[key];
         if (!m.items.length) continue;
-        await upsertRows(table, m.items.map(item => ({
+        const deduped = [...new Map(m.items.map(i => [i.category, i])).values()];
+        await upsertRows(table, deduped.map(item => ({
           property_id: activeProperty.id,
           year: m.year, month: m.month,
           category: item.category, section: item.section, value: item.value,
