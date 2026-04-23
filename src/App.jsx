@@ -63,37 +63,6 @@ async function loadData(table, propertyId, year, month) {
 }
 
 // ── Claude helpers ────────────────────────────────────────────────
-async function parseFileWithClaude(csv, fileType) {
-  const res = await fetch(API_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 32000,
-      system: `You are a real estate financial data parser. The file is a ${fileType}.
-It may contain data for multiple months as separate columns (Jan, Feb, ... or 01/2024 etc.).
-Return ONLY valid JSON, no markdown:
-{
-  "property": "property name or null",
-  "months": [
-    {
-      "year": 2024,
-      "month": 1,
-      "items": [
-        { "category": "string", "section": "Income|Expense|NOI|Other", "value": number }
-      ]
-    }
-  ]
-}
-Numbers are plain (no $ or commas). If only one month, return array with one entry. Infer year from context or use current year.`,
-      messages: [{ role: "user", content: `Parse this file:\n\n${csv}` }],
-    }),
-  });
-  const data = await res.json();
-  const text = data.content?.map(b => b.text || "").join("") || "";
-  return JSON.parse(text.replace(/```json|```/g, "").trim());
-}
-
 async function getInsights(matches) {
   const res = await fetch(API_URL, {
     method: "POST",
@@ -160,30 +129,6 @@ function DropZone({ label, file, onFile, accept = ".xlsx,.xls,.csv" }) {
   );
 }
 
-function VarianceRow({ row }) {
-  const isIncome = row.section === "Income";
-  const diff = row.actual - row.budget;
-  const isGood = isIncome ? diff >= 0 : diff <= 0;
-  const pct = row.budget !== 0 ? (diff / Math.abs(row.budget)) * 100 : 0;
-  const color = Math.abs(diff) < 0.5 ? C.muted : isGood ? C.green : C.red;
-  const fmt = v => "$" + Math.abs(v).toLocaleString("en-US", { maximumFractionDigits: 0 });
-  return (
-    <tr style={{ borderTop: `1px solid ${C.border}` }}>
-      <td style={{ padding: "9px 14px", color: C.text }}>{row.category}</td>
-      <td style={{ padding: "9px 14px", textAlign: "right", color: C.sub }}>{fmt(row.budget)}</td>
-      <td style={{ padding: "9px 14px", textAlign: "right", color: C.text }}>{fmt(row.actual)}</td>
-      <td style={{ padding: "9px 14px", textAlign: "right" }}>
-        <span style={{ color, fontWeight: 600 }}>
-          {diff >= 0 ? "+" : ""}{diff.toLocaleString("en-US", { maximumFractionDigits: 0 })}
-        </span>
-        <span style={{ color: C.muted, fontSize: 11, marginLeft: 5 }}>
-          ({pct >= 0 ? "+" : ""}{pct.toFixed(1)}%)
-        </span>
-      </td>
-    </tr>
-  );
-}
-
 // ── Main App ──────────────────────────────────────────────────────
 export default function BVATool() {
   const [view, setView] = useState("home"); // home | property | upload | analyze
@@ -201,8 +146,7 @@ export default function BVATool() {
   const [uploadResult, setUploadResult] = useState(null);
 
   // Analyze state
-  const [selYear, setSelYear] = useState(null);
-  const [selMonth, setSelMonth] = useState(null);
+  const [selMonths, setSelMonths] = useState([]);
   const [analyzing, setAnalyzing] = useState(false);
   const [bvaData, setBvaData] = useState(null);
   const [insights, setInsights] = useState(null);
@@ -238,23 +182,70 @@ export default function BVATool() {
     if (!uploadFile || !activeProperty) return;
     setUploading(true); setUploadMsg("קורא קובץ..."); setUploadResult(null);
     try {
-      const csv = await readFileCSV(uploadFile);
-      setUploadMsg("AI מנתח...");
-      const parsed = await parseFileWithClaude(csv, uploadType === "budget" ? "budget" : "P&L actual");
-      setUploadMsg(`שומר ${parsed.months.length} חודש/ים...`);
+      const buffer = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = e => resolve(new Uint8Array(e.target.result));
+        reader.onerror = reject;
+        reader.readAsArrayBuffer(uploadFile);
+      });
+      const wb = XLSX.read(buffer, { type: "array" });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+
+      const headers = rows[0] || [];
+      const currentYear = new Date().getFullYear();
+      const HEBREW_MONTHS = ["ינואר","פברואר","מרץ","אפריל","מאי","יוני","יולי","אוגוסט","ספטמבר","אוקטובר","נובמבר","דצמבר"];
+      const ENGLISH_MONTHS = ["january","february","march","april","may","june","july","august","september","october","november","december"];
+
+      const monthCols = [];
+      for (let c = 2; c < headers.length; c++) {
+        const h = String(headers[c] ?? "").trim();
+        if (!h) continue;
+        const hebrewIdx = HEBREW_MONTHS.indexOf(h);
+        if (hebrewIdx !== -1) { monthCols.push({ col: c, month: hebrewIdx + 1, year: currentYear }); continue; }
+        const mmYYYY = h.match(/^(\d{1,2})\/(\d{4})$/);
+        if (mmYYYY) { monthCols.push({ col: c, month: parseInt(mmYYYY[1]), year: parseInt(mmYYYY[2]) }); continue; }
+        const lc = h.toLowerCase();
+        const engIdx = ENGLISH_MONTHS.findIndex(m => lc.startsWith(m));
+        if (engIdx !== -1) {
+          const yearMatch = h.match(/(\d{4})/);
+          monthCols.push({ col: c, month: engIdx + 1, year: yearMatch ? parseInt(yearMatch[1]) : currentYear });
+        }
+      }
+
+      if (monthCols.length === 0) throw new Error("לא נמצאו עמודות חודש בקובץ");
+
+      const monthData = {};
+      for (const mc of monthCols) monthData[`${mc.year}-${mc.month}`] = { year: mc.year, month: mc.month, items: [] };
+
+      for (let r = 1; r < rows.length; r++) {
+        const row = rows[r];
+        const category = String(row[0] ?? "").trim();
+        if (!category) continue;
+        const section = String(row[1] ?? "").trim() || "Other";
+        for (const mc of monthCols) {
+          const raw = String(row[mc.col] ?? "").replace(/[$,]/g, "").trim();
+          const value = parseFloat(raw);
+          monthData[`${mc.year}-${mc.month}`].items.push({ category, section, value: isNaN(value) ? 0 : value });
+        }
+      }
+
+      setUploadMsg(`שומר ${monthCols.length} חודש/ים...`);
       const table = uploadType === "budget" ? "bva_budget" : "bva_actual";
       let saved = 0;
-      for (const m of parsed.months) {
-        const rows = m.items.map(item => ({
+      for (const key of Object.keys(monthData)) {
+        const m = monthData[key];
+        if (!m.items.length) continue;
+        await upsertRows(table, m.items.map(item => ({
           property_id: activeProperty.id,
           year: m.year, month: m.month,
           category: item.category, section: item.section, value: item.value,
           updated_at: new Date().toISOString(),
-        }));
-        await upsertRows(table, rows);
+        })));
         saved++;
       }
-      setUploadResult({ ok: true, months: parsed.months.length, property: parsed.property });
+
+      setUploadResult({ ok: true, months: saved });
       setUploadFile(null);
       const [bm, am] = await Promise.all([
         loadMonths("bva_budget", activeProperty.id).catch(() => []),
@@ -267,23 +258,30 @@ export default function BVATool() {
   }
 
   async function runAnalysis() {
-    if (!selYear || !selMonth || !activeProperty) return;
+    if (!selMonths.length || !activeProperty) return;
     setAnalyzing(true); setBvaData(null); setInsights(null);
     try {
-      const [budgetRows, actualRows] = await Promise.all([
-        loadData("bva_budget", activeProperty.id, selYear, selMonth),
-        loadData("bva_actual", activeProperty.id, selYear, selMonth),
-      ]);
-      const budgetMap = Object.fromEntries(budgetRows.map(r => [r.category, r]));
-      const actualMap = Object.fromEntries(actualRows.map(r => [r.category, r]));
-      const allCats = [...new Set([...Object.keys(budgetMap), ...Object.keys(actualMap)])];
-      const matches = allCats.map(cat => ({
-        category: cat,
-        section: budgetMap[cat]?.section || actualMap[cat]?.section || "Other",
-        budget: budgetMap[cat]?.value ?? 0,
-        actual: actualMap[cat]?.value ?? 0,
-      }));
-      setBvaData(matches);
+      const allRows = [];
+      for (const { year, month } of selMonths) {
+        const [budgetRows, actualRows] = await Promise.all([
+          loadData("bva_budget", activeProperty.id, year, month),
+          loadData("bva_actual", activeProperty.id, year, month),
+        ]);
+        const budgetMap = Object.fromEntries(budgetRows.map(r => [r.category, r]));
+        const actualMap = Object.fromEntries(actualRows.map(r => [r.category, r]));
+        const allCats = [...new Set([...Object.keys(budgetMap), ...Object.keys(actualMap)])];
+        for (const cat of allCats) {
+          allRows.push({
+            category: cat,
+            section: budgetMap[cat]?.section || actualMap[cat]?.section || "Other",
+            budget: budgetMap[cat]?.value ?? 0,
+            actual: actualMap[cat]?.value ?? 0,
+            year,
+            month,
+          });
+        }
+      }
+      setBvaData(allRows);
     } catch (e) { alert("שגיאה: " + e.message); }
     finally { setAnalyzing(false); }
   }
@@ -404,16 +402,25 @@ export default function BVATool() {
                 ? <div style={{ color: C.muted, fontSize: 13 }}>אין חודשים משותפים לתקציב ו-P&L עדיין</div>
                 : <>
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
-                      {commonMonths.map(m => (
-                        <button key={`${m.year}-${m.month}`}
-                          onClick={() => { setSelYear(m.year); setSelMonth(m.month); setBvaData(null); setInsights(null); }}
-                          style={{
-                            padding: "7px 14px", borderRadius: 8, border: "none", cursor: "pointer", fontWeight: 600, fontSize: 13,
-                            background: selYear===m.year && selMonth===m.month ? C.accent : C.border, color: "#fff",
-                          }}>{MONTHS[m.month-1]} {m.year}</button>
-                      ))}
+                      {commonMonths.map(m => {
+                        const key = `${m.year}-${m.month}`;
+                        const selected = selMonths.some(s => s.year === m.year && s.month === m.month);
+                        return (
+                          <button key={key}
+                            onClick={() => {
+                              setSelMonths(prev => selected
+                                ? prev.filter(s => !(s.year === m.year && s.month === m.month))
+                                : [...prev, { year: m.year, month: m.month }]);
+                              setBvaData(null); setInsights(null);
+                            }}
+                            style={{
+                              padding: "7px 14px", borderRadius: 8, border: "none", cursor: "pointer", fontWeight: 600, fontSize: 13,
+                              background: selected ? C.accent : C.border, color: "#fff",
+                            }}>{MONTHS[m.month-1]} {m.year}</button>
+                        );
+                      })}
                     </div>
-                    <Btn onClick={runAnalysis} disabled={!selYear || !selMonth || analyzing}>
+                    <Btn onClick={runAnalysis} disabled={selMonths.length === 0 || analyzing}>
                       {analyzing ? "מנתח..." : "הפק ניתוח"}
                     </Btn>
                   </>
@@ -421,42 +428,89 @@ export default function BVATool() {
             </div>
 
             {/* BVA Results */}
-            {bvaData && (
-              <>
-                {/* NOI summary */}
-                <div style={{ display: "flex", gap: 14 }}>
-                  {[["NOI תקציב", totalBudget, false], ["NOI בפועל", totalActual, false], ["סטייה", totalActual-totalBudget, true]].map(([label, val, isVar]) => (
-                    <div key={label} style={{ ...card({ padding: "14px 18px" }), flex: 1 }}>
-                      <div style={{ color: C.muted, fontSize: 11, marginBottom: 4 }}>{label}</div>
-                      <div style={{ fontSize: 20, fontWeight: 700, color: isVar ? (val>=0?C.green:C.red) : C.text }}>
-                        {val<0?"-":""} ${Math.abs(val).toLocaleString("en-US",{maximumFractionDigits:0})}
-                      </div>
-                      {isVar && totalBudget!==0 && <div style={{fontSize:11,color:C.muted,marginTop:2}}>{((val/Math.abs(totalBudget))*100).toFixed(1)}%</div>}
-                    </div>
-                  ))}
-                </div>
-
-                {sections.map(sec => (
-                  <div key={sec} style={card({ overflow: "hidden" })}>
-                    <div style={{ padding: "11px 16px", borderBottom: `1px solid ${C.border}`, fontWeight: 700, fontSize: 12, color: C.sub, textTransform: "uppercase", letterSpacing: 1 }}>
-                      {sec==="Income"?"📈 הכנסות":sec==="Expense"?"📉 הוצאות":sec==="NOI"?"💰 NOI":sec}
-                    </div>
-                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-                      <thead>
-                        <tr style={{ background: "#13151f" }}>
-                          {["קטגוריה","תקציב","בפועל","סטייה $ / %"].map(h => (
-                            <th key={h} style={{ padding:"9px 14px", textAlign: h==="קטגוריה"?"left":"right", color:C.muted, fontWeight:600, fontSize:11 }}>{h}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {bvaData.filter(r=>r.section===sec).map((row,i)=><VarianceRow key={i} row={row}/>)}
-                      </tbody>
-                    </table>
+            {bvaData && (() => {
+              const selectedMonths = [...new Map(bvaData.map(r => [`${r.year}-${r.month}`, { year: r.year, month: r.month }])).values()]
+                .sort((a, b) => a.year !== b.year ? a.year - b.year : a.month - b.month);
+              return (
+                <>
+                  {/* NOI summary — one card per month */}
+                  <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+                    {selectedMonths.map(({ year, month }) => {
+                      const mRows = bvaData.filter(r => r.year === year && r.month === month);
+                      const budgetNOI = mRows.filter(r => r.section === "Income").reduce((a, b) => a + b.budget, 0)
+                                      - mRows.filter(r => r.section === "Expense").reduce((a, b) => a + b.budget, 0);
+                      const actualNOI = mRows.filter(r => r.section === "Income").reduce((a, b) => a + b.actual, 0)
+                                       - mRows.filter(r => r.section === "Expense").reduce((a, b) => a + b.actual, 0);
+                      const delta = actualNOI - budgetNOI;
+                      return (
+                        <div key={`${year}-${month}`} style={{ ...card({ padding: "14px 18px" }), flex: 1, minWidth: 200 }}>
+                          <div style={{ color: C.accent, fontWeight: 700, fontSize: 12, marginBottom: 10 }}>{MONTHS[month - 1]} {year}</div>
+                          <div style={{ display: "flex", gap: 16 }}>
+                            <div>
+                              <div style={{ color: C.muted, fontSize: 10, marginBottom: 2 }}>תקציב</div>
+                              <div style={{ fontWeight: 700, fontSize: 15, color: C.text }}>${budgetNOI.toLocaleString("en-US", { maximumFractionDigits: 0 })}</div>
+                            </div>
+                            <div>
+                              <div style={{ color: C.muted, fontSize: 10, marginBottom: 2 }}>בפועל</div>
+                              <div style={{ fontWeight: 700, fontSize: 15, color: C.text }}>${actualNOI.toLocaleString("en-US", { maximumFractionDigits: 0 })}</div>
+                            </div>
+                            <div>
+                              <div style={{ color: C.muted, fontSize: 10, marginBottom: 2 }}>סטייה</div>
+                              <div style={{ fontWeight: 700, fontSize: 15, color: delta >= 0 ? C.green : C.red }}>
+                                {delta >= 0 ? "+" : ""}{delta.toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
-                ))}
 
-                {/* AI Insights */}
+                  {sections.map(sec => {
+                    const secRows = bvaData.filter(r => r.section === sec);
+                    const cats = [...new Set(secRows.map(r => r.category))];
+                    const isGoodDelta = delta => sec === "Expense" ? delta <= 0 : delta >= 0;
+                    return (
+                      <div key={sec} style={card({ overflow: "hidden" })}>
+                        <div style={{ padding: "11px 16px", borderBottom: `1px solid ${C.border}`, fontWeight: 700, fontSize: 12, color: C.sub, textTransform: "uppercase", letterSpacing: 1 }}>
+                          {sec === "Income" ? "📈 הכנסות" : sec === "Expense" ? "📉 הוצאות" : sec === "NOI" ? "💰 NOI" : sec}
+                        </div>
+                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                          <thead>
+                            <tr style={{ background: "#13151f" }}>
+                              <th style={{ padding: "9px 14px", textAlign: "left", color: C.muted, fontWeight: 600, fontSize: 11 }}>קטגוריה</th>
+                              {selectedMonths.flatMap(({ year, month }) => [
+                                <th key={`b-${year}-${month}`} style={{ padding: "9px 14px", textAlign: "right", color: C.muted, fontWeight: 600, fontSize: 11 }}>תקציב {MONTHS[month - 1]}</th>,
+                                <th key={`a-${year}-${month}`} style={{ padding: "9px 14px", textAlign: "right", color: C.muted, fontWeight: 600, fontSize: 11 }}>בפועל {MONTHS[month - 1]}</th>,
+                                <th key={`d-${year}-${month}`} style={{ padding: "9px 14px", textAlign: "right", color: C.muted, fontWeight: 600, fontSize: 11 }}>Δ {MONTHS[month - 1]}</th>,
+                              ])}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {cats.map(cat => (
+                              <tr key={cat} style={{ borderTop: `1px solid ${C.border}` }}>
+                                <td style={{ padding: "9px 14px", color: C.text }}>{cat}</td>
+                                {selectedMonths.flatMap(({ year, month }) => {
+                                  const row = secRows.find(r => r.category === cat && r.year === year && r.month === month);
+                                  const budget = row?.budget ?? 0;
+                                  const actual = row?.actual ?? 0;
+                                  const delta = actual - budget;
+                                  const deltaBg = Math.abs(delta) < 0.5 ? "transparent" : isGoodDelta(delta) ? "#0d2a1a" : "#2a0d0d";
+                                  return [
+                                    <td key={`b-${year}-${month}`} style={{ padding: "9px 14px", textAlign: "right", color: C.sub }}>${budget.toLocaleString("en-US", { maximumFractionDigits: 0 })}</td>,
+                                    <td key={`a-${year}-${month}`} style={{ padding: "9px 14px", textAlign: "right", color: C.text }}>${actual.toLocaleString("en-US", { maximumFractionDigits: 0 })}</td>,
+                                    <td key={`d-${year}-${month}`} style={{ padding: "9px 14px", textAlign: "right", background: deltaBg, color: C.text }}>{delta >= 0 ? "+" : ""}{delta.toLocaleString("en-US", { maximumFractionDigits: 0 })}</td>,
+                                  ];
+                                })}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  })}
+
+                  {/* AI Insights */}
                 <div style={card({ padding: 20 })}>
                   <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: insights?14:0 }}>
                     <div style={{ fontWeight:700, fontSize:15 }}>💡 תובנות AI</div>
@@ -467,7 +521,8 @@ export default function BVATool() {
                   {insights && <div style={{ color:C.sub, fontSize:14, lineHeight:1.8, whiteSpace:"pre-wrap" }}>{insights}</div>}
                 </div>
               </>
-            )}
+              );
+            })()}
           </div>
         )}
       </div>
