@@ -15,12 +15,14 @@ const MONTHS = ["ינואר","פברואר","מרץ","אפריל","מאי","יו
 
 // ── Supabase helpers ──────────────────────────────────────────────
 async function sbFetch(path, opts = {}) {
+  const isGet = !opts.method || opts.method === "GET";
   const res = await fetch(`${SUPABASE_URL}/rest/v1${path}`, {
     headers: {
       apikey: SUPABASE_KEY,
       Authorization: `Bearer ${SUPABASE_KEY}`,
       "Content-Type": "application/json",
       Prefer: opts.prefer || "",
+      ...(isGet ? { "Range-Unit": "items", "Range": "0-9999" } : {}),
     },
     ...opts,
   });
