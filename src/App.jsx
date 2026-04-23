@@ -54,6 +54,7 @@ async function loadProperties() {
 }
 
 async function loadMonths(table, propertyId) {
+  console.log("[loadMonths] table:", table, "propertyId:", propertyId);
   const rows = await sbFetch(`/${table}?property_id=eq.${propertyId}&select=year,month`);
   const seen = new Set();
   return rows.filter(r => { const k = `${r.year}-${r.month}`; if (seen.has(k)) return false; seen.add(k); return true; })
@@ -255,11 +256,13 @@ export default function BVATool() {
 
       setUploadMsg(`שומר ${monthCols.length} חודש/ים...`);
       const table = uploadType === "budget" ? "bva_budget" : "bva_actual";
+      console.log("[handleUpload] uploadType:", uploadType, "→ table:", table);
       let saved = 0;
       for (const key of Object.keys(monthData)) {
         const m = monthData[key];
         if (!m.items.length) continue;
         const deduped = [...new Map(m.items.map(i => [i.category, i])).values()];
+        console.log(`[handleUpload] upserting ${deduped.length} rows → ${table} (${m.year}-${m.month})`);
         await upsertRows(table, deduped.map(item => ({
           property_id: activeProperty.id,
           year: m.year, month: m.month,
