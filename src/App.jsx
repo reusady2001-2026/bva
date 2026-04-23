@@ -170,8 +170,7 @@ export default function BVATool() {
   const [uploadResult, setUploadResult] = useState(null);
 
   // Analyze state
-  const [selYear, setSelYear] = useState(null);
-  const [selMonth, setSelMonth] = useState(null);
+  const [selMonths, setSelMonths] = useState([]);
   const [analyzing, setAnalyzing] = useState(false);
   const [bvaData, setBvaData] = useState(null);
   const [insights, setInsights] = useState(null);
@@ -283,23 +282,30 @@ export default function BVATool() {
   }
 
   async function runAnalysis() {
-    if (!selYear || !selMonth || !activeProperty) return;
+    if (!selMonths.length || !activeProperty) return;
     setAnalyzing(true); setBvaData(null); setInsights(null);
     try {
-      const [budgetRows, actualRows] = await Promise.all([
-        loadData("bva_budget", activeProperty.id, selYear, selMonth),
-        loadData("bva_actual", activeProperty.id, selYear, selMonth),
-      ]);
-      const budgetMap = Object.fromEntries(budgetRows.map(r => [r.category, r]));
-      const actualMap = Object.fromEntries(actualRows.map(r => [r.category, r]));
-      const allCats = [...new Set([...Object.keys(budgetMap), ...Object.keys(actualMap)])];
-      const matches = allCats.map(cat => ({
-        category: cat,
-        section: budgetMap[cat]?.section || actualMap[cat]?.section || "Other",
-        budget: budgetMap[cat]?.value ?? 0,
-        actual: actualMap[cat]?.value ?? 0,
-      }));
-      setBvaData(matches);
+      const allRows = [];
+      for (const { year, month } of selMonths) {
+        const [budgetRows, actualRows] = await Promise.all([
+          loadData("bva_budget", activeProperty.id, year, month),
+          loadData("bva_actual", activeProperty.id, year, month),
+        ]);
+        const budgetMap = Object.fromEntries(budgetRows.map(r => [r.category, r]));
+        const actualMap = Object.fromEntries(actualRows.map(r => [r.category, r]));
+        const allCats = [...new Set([...Object.keys(budgetMap), ...Object.keys(actualMap)])];
+        for (const cat of allCats) {
+          allRows.push({
+            category: cat,
+            section: budgetMap[cat]?.section || actualMap[cat]?.section || "Other",
+            budget: budgetMap[cat]?.value ?? 0,
+            actual: actualMap[cat]?.value ?? 0,
+            year,
+            month,
+          });
+        }
+      }
+      setBvaData(allRows);
     } catch (e) { alert("שגיאה: " + e.message); }
     finally { setAnalyzing(false); }
   }
@@ -420,16 +426,25 @@ export default function BVATool() {
                 ? <div style={{ color: C.muted, fontSize: 13 }}>אין חודשים משותפים לתקציב ו-P&L עדיין</div>
                 : <>
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
-                      {commonMonths.map(m => (
-                        <button key={`${m.year}-${m.month}`}
-                          onClick={() => { setSelYear(m.year); setSelMonth(m.month); setBvaData(null); setInsights(null); }}
-                          style={{
-                            padding: "7px 14px", borderRadius: 8, border: "none", cursor: "pointer", fontWeight: 600, fontSize: 13,
-                            background: selYear===m.year && selMonth===m.month ? C.accent : C.border, color: "#fff",
-                          }}>{MONTHS[m.month-1]} {m.year}</button>
-                      ))}
+                      {commonMonths.map(m => {
+                        const key = `${m.year}-${m.month}`;
+                        const selected = selMonths.some(s => s.year === m.year && s.month === m.month);
+                        return (
+                          <button key={key}
+                            onClick={() => {
+                              setSelMonths(prev => selected
+                                ? prev.filter(s => !(s.year === m.year && s.month === m.month))
+                                : [...prev, { year: m.year, month: m.month }]);
+                              setBvaData(null); setInsights(null);
+                            }}
+                            style={{
+                              padding: "7px 14px", borderRadius: 8, border: "none", cursor: "pointer", fontWeight: 600, fontSize: 13,
+                              background: selected ? C.accent : C.border, color: "#fff",
+                            }}>{MONTHS[m.month-1]} {m.year}</button>
+                        );
+                      })}
                     </div>
-                    <Btn onClick={runAnalysis} disabled={!selYear || !selMonth || analyzing}>
+                    <Btn onClick={runAnalysis} disabled={selMonths.length === 0 || analyzing}>
                       {analyzing ? "מנתח..." : "הפק ניתוח"}
                     </Btn>
                   </>
