@@ -15,16 +15,17 @@ const MONTHS = ["ינואר","פברואר","מרץ","אפריל","מאי","יו
 
 // ── Supabase helpers ──────────────────────────────────────────────
 async function sbFetch(path, opts = {}) {
-  const isGet = !opts.method || opts.method === "GET";
+  const { from, to, prefer, ...rest } = opts;
+  const isGet = !rest.method || rest.method === "GET";
   const res = await fetch(`${SUPABASE_URL}/rest/v1${path}`, {
     headers: {
       apikey: SUPABASE_KEY,
       Authorization: `Bearer ${SUPABASE_KEY}`,
       "Content-Type": "application/json",
-      Prefer: opts.prefer || "",
-      ...(isGet ? { "Range-Unit": "items", "Range": "0-9999" } : {}),
+      Prefer: prefer || "",
+      ...(isGet ? { "Range-Unit": "items", "Range": `${from ?? 0}-${to ?? 9999}` } : {}),
     },
-    ...opts,
+    ...rest,
   });
   if (!res.ok) throw new Error(await res.text());
   const txt = await res.text();
@@ -55,10 +56,22 @@ async function loadProperties() {
 
 async function loadMonths(table, propertyId) {
   console.log("[loadMonths] table:", table, "propertyId:", propertyId);
-  const rows = await sbFetch(`/${table}?property_id=eq.${propertyId}&select=year,month`);
+  const pageSize = 1000;
+  let from = 0;
+  const allRows = [];
+  while (true) {
+    const page = await sbFetch(
+      `/${table}?property_id=eq.${propertyId}&select=year,month&order=year,month`,
+      { from, to: from + pageSize - 1 }
+    );
+    allRows.push(...(page || []));
+    if (!page || page.length < pageSize) break;
+    from += pageSize;
+  }
   const seen = new Set();
-  return rows.filter(r => { const k = `${r.year}-${r.month}`; if (seen.has(k)) return false; seen.add(k); return true; })
-             .sort((a, b) => a.year !== b.year ? a.year - b.year : a.month - b.month);
+  return allRows
+    .filter(r => { const k = `${r.year}-${r.month}`; if (seen.has(k)) return false; seen.add(k); return true; })
+    .sort((a, b) => a.year !== b.year ? a.year - b.year : a.month - b.month);
 }
 
 async function loadData(table, propertyId, year, month) {
@@ -262,13 +275,17 @@ export default function BVATool() {
         const m = monthData[key];
         if (!m.items.length) continue;
         const deduped = [...new Map(m.items.map(i => [i.category, i])).values()];
-        console.log(`[handleUpload] upserting ${deduped.length} rows → ${table} (${m.year}-${m.month})`);
-        await upsertRows(table, deduped.map(item => ({
+        const dbRows = deduped.map(item => ({
           property_id: activeProperty.id,
           year: m.year, month: m.month,
           category: item.category, section: item.section, value: item.value,
           updated_at: new Date().toISOString(),
-        })));
+        }));
+        console.log(`[handleUpload] upserting ${dbRows.length} rows in chunks → ${table} (${m.year}-${m.month})`);
+        const CHUNK = 100;
+        for (let i = 0; i < dbRows.length; i += CHUNK) {
+          await upsertRows(table, dbRows.slice(i, i + CHUNK));
+        }
         saved++;
       }
 
